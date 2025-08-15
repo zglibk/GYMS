@@ -1,0 +1,29 @@
+{
+  "name": "apartment-cleaning-management",
+  "version": "1.0.0",
+  "description": "公寓房间清洁管理系统",
+  "main": "server/app.js",
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "nodemon server/app.js",
+    "client": "cd client && npm run dev",
+    "build": "cd client && npm run build",
+    "start": "node server/app.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "mssql": "^9.1.1",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "body-parser": "^1.20.2",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1",
+    "concurrently": "^8.2.0"
+  },
+  "keywords": ["apartment", "cleaning", "management", "vue3", "nodejs"],
+  "author": "Developer",
+  "license": "MIT"
+}
