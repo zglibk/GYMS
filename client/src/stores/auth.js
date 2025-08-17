@@ -5,11 +5,27 @@ import { ElMessage } from 'element-plus'
 
 export const useAuthStore = defineStore('auth', () => {
   const token = ref(localStorage.getItem('token') || '')
-  const user = ref(JSON.parse(localStorage.getItem('user') || 'null'))
+  const user = ref((() => {
+    const userData = localStorage.getItem('user')
+    if (!userData || userData === 'undefined') {
+      return null
+    }
+    try {
+      return JSON.parse(userData)
+    } catch (e) {
+      return null
+    }
+  })())
   const loading = ref(false)
+  const isInitialized = ref(false) // 添加初始化状态标记
 
   const isAuthenticated = computed(() => {
     return !!token.value && !!user.value
+  })
+
+  // 添加初始化完成状态
+  const isReady = computed(() => {
+    return isInitialized.value
   })
 
   // 登录
@@ -80,45 +96,55 @@ export const useAuthStore = defineStore('auth', () => {
 
   // 登出
   const logout = () => {
-    token.value = ''
-    user.value = null
-    
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
-    
-    // 清除API默认token
-    delete api.defaults.headers.common['Authorization']
-    
+    clearAuth()
     ElMessage.success('已退出登录')
   }
 
-  // 检查认证状态
-  const checkAuth = async () => {
-    if (!token.value) {
-      return false
-    }
-    
+  // 初始化认证状态
+  const initAuth = async () => {
     try {
+      if (!token.value) {
+        isInitialized.value = true
+        return false
+      }
+
       // 设置API默认token
       api.defaults.headers.common['Authorization'] = `Bearer ${token.value}`
       
       const response = await api.get('/auth/me')
       
       if (response.data.success) {
-        user.value = response.data.data.user
-        localStorage.setItem('user', JSON.stringify(response.data.data.user))
+        user.value = response.data.data
+        localStorage.setItem('user', JSON.stringify(response.data.data))
+        isInitialized.value = true
         return true
       } else {
         // token无效，清除本地存储
-        logout()
+        clearAuth()
+        isInitialized.value = true
         return false
       }
     } catch (error) {
-      console.error('检查认证状态错误:', error)
+      console.error('初始化认证状态错误:', error)
       // token无效，清除本地存储
-      logout()
+      clearAuth()
+      isInitialized.value = true
       return false
     }
+  }
+
+  // 检查认证状态（保持向后兼容）
+  const checkAuth = async () => {
+    return await initAuth()
+  }
+
+  // 清除认证信息（内部方法，不显示消息）
+  const clearAuth = () => {
+    token.value = ''
+    user.value = null
+    localStorage.removeItem('token')
+    localStorage.removeItem('user')
+    delete api.defaults.headers.common['Authorization']
   }
 
   // 更新用户信息
@@ -132,10 +158,13 @@ export const useAuthStore = defineStore('auth', () => {
     user,
     loading,
     isAuthenticated,
+    isInitialized,
+    isReady,
     login,
     register,
     logout,
     checkAuth,
+    initAuth,
     updateUser
   }
 })

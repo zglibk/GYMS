@@ -54,8 +54,13 @@ const router = createRouter({
 })
 
 // 路由守卫
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore()
+  
+  // 如果还未初始化，先进行初始化
+  if (!authStore.isInitialized) {
+    await authStore.initAuth()
+  }
   
   // 需要登录的页面
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {

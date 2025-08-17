@@ -1,6 +1,7 @@
 import express from 'express';
-import sql from 'mssql';
+import database from '../config/database.js';
 import { authenticateToken as auth } from '../middleware/auth.js';
+
 const router = express.Router();
 
 /**
@@ -11,288 +12,256 @@ const router = express.Router();
 router.get('/', auth, async (req, res) => {
   try {
     const { page = 1, pageSize = 10, floor, roomType, status } = req.query;
-    const offset = (page - 1) * pageSize;
+    const pageNum = parseInt(page);
+    const pageSizeNum = parseInt(pageSize);
+    const offset = (pageNum - 1) * pageSizeNum;
 
     let whereClause = 'WHERE 1=1';
-    const request = new sql.Request();
+    const params = [];
     
     // 添加筛选条件
     if (floor) {
-      whereClause += ' AND floor_number = @floor';
-      request.input('floor', sql.Int, parseInt(floor));
+      whereClause += ' AND floor_number = ?';
+      params.push(parseInt(floor));
     }
     
     if (roomType) {
-      whereClause += ' AND room_type = @roomType';
-      request.input('roomType', sql.NVarChar, roomType);
+      whereClause += ' AND room_type = ?';
+      params.push(roomType);
     }
     
     if (status) {
-      whereClause += ' AND status = @status';
-      request.input('status', sql.NVarChar, status);
+      whereClause += ' AND status = ?';
+      params.push(status);
     }
 
     // 获取总数
     const countQuery = `SELECT COUNT(*) as total FROM rooms ${whereClause}`;
-    const countResult = await request.query(countQuery);
-    const total = countResult.recordset[0].total;
+    const countResult = await database.query(countQuery, params);
+    const total = countResult[0].total;
 
-    // 获取分页数据 - 使用兼容SQL Server 2008R2的分页方式
-    request.input('pageSize', sql.Int, parseInt(pageSize));
-    request.input('offset', sql.Int, offset);
-    
+    // 获取分页数据
     const dataQuery = `
-      SELECT * FROM (
-        SELECT *, ROW_NUMBER() OVER (ORDER BY floor_number, room_number) as rn
-        FROM rooms
-        ${whereClause}
-      ) subquery
-      WHERE rn > @offset AND rn <= (@offset + @pageSize)
+      SELECT * FROM rooms
+      ${whereClause}
       ORDER BY floor_number, room_number
+      LIMIT ? OFFSET ?
     `;
     
-    const dataResult = await request.query(dataQuery);
-    
+    const dataParams = [...params, pageSizeNum, offset];
+    const rooms = await database.query(dataQuery, dataParams);
+
     res.json({
       success: true,
       data: {
-        rooms: dataResult.recordset.map(room => ({
-          id: room.id,
-          room_number: room.room_number,
-          floor_number: room.floor_number,
-          room_type: room.room_type,
-          status: room.status,
-          remarks: room.remarks,
-          created_at: room.created_at,
-          updated_at: room.updated_at
-        })),
+        rooms,
         pagination: {
-          current: parseInt(page),
-          pageSize: parseInt(pageSize),
-          total: total,
-          pages: Math.ceil(total / pageSize)
+          page: pageNum,
+          pageSize: pageSizeNum,
+          total,
+          totalPages: Math.ceil(total / pageSizeNum)
         }
       }
     });
   } catch (error) {
-    console.error('获取房号列表失败:', error);
+    console.error('获取房间列表错误:', error);
     res.status(500).json({
       success: false,
-      message: '获取房号列表失败',
-      error: error.message
+      message: '获取房间列表失败'
     });
   }
 });
 
 /**
- * 根据ID获取单个房号信息
+ * 根据ID获取房间详情
  * GET /api/rooms/:id
  */
 router.get('/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
-    const request = new sql.Request();
-    request.input('id', sql.Int, parseInt(id));
     
-    const result = await request.query('SELECT * FROM rooms WHERE id = @id');
-    
-    if (result.recordset.length === 0) {
+    const room = await database.query(
+      'SELECT * FROM rooms WHERE id = ?',
+      [id]
+    );
+
+    if (room.length === 0) {
       return res.status(404).json({
         success: false,
-        message: '房号不存在'
+        message: '房间不存在'
       });
     }
-    
-    const room = result.recordset[0];
+
     res.json({
       success: true,
-      data: {
-        id: room.id,
-        room_number: room.room_number,
-        floor_number: room.floor_number,
-        room_type: room.room_type,
-        status: room.status,
-        remarks: room.remarks,
-        created_at: room.created_at,
-        updated_at: room.updated_at
-      }
+      data: room[0]
     });
   } catch (error) {
-    console.error('获取房号信息失败:', error);
+    console.error('获取房间详情错误:', error);
     res.status(500).json({
       success: false,
-      message: '获取房号信息失败',
-      error: error.message
+      message: '获取房间详情失败'
     });
   }
 });
 
 /**
- * 创建新房号
+ * 创建新房间
  * POST /api/rooms
  */
 router.post('/', auth, async (req, res) => {
   try {
-    const { room_number, floor_number, room_type, status = '可用', remarks } = req.body;
-    
-    // 验证必填字段
+    const { room_number, floor_number, room_type, status = '空闲', remarks } = req.body;
+
     if (!room_number || !floor_number || !room_type) {
       return res.status(400).json({
         success: false,
-        message: '房号、楼层和房间类型为必填项'
+        message: '房号、楼层和房间类型不能为空'
       });
     }
-    
-    const request = new sql.Request();
-    request.input('room_number', sql.NVarChar, room_number);
-    request.input('floor_number', sql.Int, parseInt(floor_number));
-    request.input('room_type', sql.NVarChar, room_type);
-    request.input('status', sql.NVarChar, status);
-    request.input('remarks', sql.NVarChar, remarks || null);
-    
-    const result = await request.query(`
-      INSERT INTO rooms (room_number, floor_number, room_type, status, remarks)
-      OUTPUT INSERTED.*
-      VALUES (@room_number, @floor_number, @room_type, @status, @remarks)
-    `);
-    
-    const newRoom = result.recordset[0];
-    res.status(201).json({
-      success: true,
-      message: '房号创建成功',
-      data: {
-        id: newRoom.id,
-        room_number: newRoom.room_number,
-        floor_number: newRoom.floor_number,
-        room_type: newRoom.room_type,
-        status: newRoom.status,
-        remarks: newRoom.remarks,
-        created_at: newRoom.created_at,
-        updated_at: newRoom.updated_at
-      }
-    });
-  } catch (error) {
-    console.error('创建房号失败:', error);
-    if (error.number === 2627) { // 唯一约束违反
-      res.status(400).json({
+
+    // 检查房号是否已存在
+    const existingRoom = await database.query(
+      'SELECT id FROM rooms WHERE room_number = ?',
+      [room_number]
+    );
+
+    if (existingRoom.length > 0) {
+      return res.status(400).json({
         success: false,
         message: '房号已存在'
       });
-    } else {
-      res.status(500).json({
-        success: false,
-        message: '创建房号失败',
-        error: error.message
-      });
     }
+
+    // 创建房间
+    await database.query(
+      `INSERT INTO rooms (room_number, floor_number, room_type, status, remarks) 
+       VALUES (?, ?, ?, ?, ?)`,
+      [room_number, floor_number, room_type, status, remarks]
+    );
+
+    // 获取新创建的房间信息
+    const newRoom = await database.query(
+      'SELECT * FROM rooms WHERE id = LAST_INSERT_ID()'
+    );
+
+    res.status(201).json({
+      success: true,
+      message: '房间创建成功',
+      data: newRoom[0]
+    });
+  } catch (error) {
+    console.error('创建房间错误:', error);
+    res.status(500).json({
+      success: false,
+      message: '创建房间失败'
+    });
   }
 });
 
 /**
- * 更新房号信息
+ * 更新房间信息
  * PUT /api/rooms/:id
  */
 router.put('/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
     const { room_number, floor_number, room_type, status, remarks } = req.body;
-    
-    // 验证必填字段
-    if (!room_number || !floor_number || !room_type) {
-      return res.status(400).json({
-        success: false,
-        message: '房号、楼层和房间类型为必填项'
-      });
-    }
-    
-    const request = new sql.Request();
-    request.input('id', sql.Int, parseInt(id));
-    request.input('room_number', sql.NVarChar, room_number);
-    request.input('floor_number', sql.Int, parseInt(floor_number));
-    request.input('room_type', sql.NVarChar, room_type);
-    request.input('status', sql.NVarChar, status || '可用');
-    request.input('remarks', sql.NVarChar, remarks || null);
-    
-    const result = await request.query(`
-      UPDATE rooms 
-      SET room_number = @room_number,
-          floor_number = @floor_number,
-          room_type = @room_type,
-          status = @status,
-          remarks = @remarks,
-          updated_at = GETDATE()
-      OUTPUT INSERTED.*
-      WHERE id = @id
-    `);
-    
-    if (result.recordset.length === 0) {
+
+    // 检查房间是否存在
+    const existingRoom = await database.query(
+      'SELECT * FROM rooms WHERE id = ?',
+      [id]
+    );
+
+    if (existingRoom.length === 0) {
       return res.status(404).json({
         success: false,
-        message: '房号不存在'
+        message: '房间不存在'
       });
     }
-    
-    const updatedRoom = result.recordset[0];
+
+    // 如果更新房号，检查新房号是否已被其他房间使用
+    if (room_number && room_number !== existingRoom[0].room_number) {
+      const duplicateRoom = await database.query(
+        'SELECT id FROM rooms WHERE room_number = ? AND id != ?',
+        [room_number, id]
+      );
+
+      if (duplicateRoom.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: '房号已被其他房间使用'
+        });
+      }
+    }
+
+    // 更新房间信息
+    await database.query(
+      `UPDATE rooms SET 
+       room_number = COALESCE(?, room_number),
+       floor_number = COALESCE(?, floor_number),
+       room_type = COALESCE(?, room_type),
+       status = COALESCE(?, status),
+       remarks = ?,
+       updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [room_number, floor_number, room_type, status, remarks, id]
+    );
+
+    // 获取更新后的房间信息
+    const updatedRoom = await database.query(
+      'SELECT * FROM rooms WHERE id = ?',
+      [id]
+    );
+
     res.json({
       success: true,
-      message: '房号更新成功',
-      data: {
-        id: updatedRoom.id,
-        room_number: updatedRoom.room_number,
-        floor_number: updatedRoom.floor_number,
-        room_type: updatedRoom.room_type,
-        status: updatedRoom.status,
-        remarks: updatedRoom.remarks,
-        created_at: updatedRoom.created_at,
-        updated_at: updatedRoom.updated_at
-      }
+      message: '房间信息更新成功',
+      data: updatedRoom[0]
     });
   } catch (error) {
-    console.error('更新房号失败:', error);
-    if (error.number === 2627) { // 唯一约束违反
-      res.status(400).json({
-        success: false,
-        message: '房号已存在'
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        message: '更新房号失败',
-        error: error.message
-      });
-    }
+    console.error('更新房间错误:', error);
+    res.status(500).json({
+      success: false,
+      message: '更新房间失败'
+    });
   }
 });
 
 /**
- * 删除房号
+ * 删除房间
  * DELETE /api/rooms/:id
  */
 router.delete('/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
-    const request = new sql.Request();
-    request.input('id', sql.Int, parseInt(id));
-    
-    const result = await request.query('DELETE FROM rooms WHERE id = @id');
-    
-    if (result.rowsAffected[0] === 0) {
+
+    // 检查房间是否存在
+    const existingRoom = await database.query(
+      'SELECT * FROM rooms WHERE id = ?',
+      [id]
+    );
+
+    if (existingRoom.length === 0) {
       return res.status(404).json({
         success: false,
-        message: '房号不存在'
+        message: '房间不存在'
       });
     }
-    
+
+    // 删除房间
+    await database.query('DELETE FROM rooms WHERE id = ?', [id]);
+
     res.json({
       success: true,
-      message: '房号删除成功'
+      message: '房间删除成功'
     });
   } catch (error) {
-    console.error('删除房号失败:', error);
+    console.error('删除房间错误:', error);
     res.status(500).json({
       success: false,
-      message: '删除房号失败',
-      error: error.message
+      message: '删除房间失败'
     });
   }
 });
@@ -303,23 +272,19 @@ router.delete('/:id', auth, async (req, res) => {
  */
 router.get('/floors/list', auth, async (req, res) => {
   try {
-    const request = new sql.Request();
-    const result = await request.query(`
-      SELECT DISTINCT floor_number 
-      FROM rooms 
-      ORDER BY floor_number
-    `);
-    
+    const floors = await database.query(
+      'SELECT DISTINCT floor_number FROM rooms ORDER BY floor_number'
+    );
+
     res.json({
       success: true,
-      data: result.recordset.map(row => row.floor_number)
+      data: floors.map(f => f.floor_number)
     });
   } catch (error) {
-    console.error('获取楼层列表失败:', error);
+    console.error('获取楼层列表错误:', error);
     res.status(500).json({
       success: false,
-      message: '获取楼层列表失败',
-      error: error.message
+      message: '获取楼层列表失败'
     });
   }
 });
@@ -330,23 +295,19 @@ router.get('/floors/list', auth, async (req, res) => {
  */
 router.get('/types/list', auth, async (req, res) => {
   try {
-    const request = new sql.Request();
-    const result = await request.query(`
-      SELECT DISTINCT room_type 
-      FROM rooms 
-      ORDER BY room_type
-    `);
-    
+    const types = await database.query(
+      'SELECT DISTINCT room_type FROM rooms ORDER BY room_type'
+    );
+
     res.json({
       success: true,
-      data: result.recordset.map(row => row.room_type)
+      data: types.map(t => t.room_type)
     });
   } catch (error) {
-    console.error('获取房间类型列表失败:', error);
+    console.error('获取房间类型列表错误:', error);
     res.status(500).json({
       success: false,
-      message: '获取房间类型列表失败',
-      error: error.message
+      message: '获取房间类型列表失败'
     });
   }
 });

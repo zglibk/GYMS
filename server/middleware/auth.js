@@ -29,22 +29,18 @@ const authenticateToken = async (req, res, next) => {
         
         // 验证用户是否存在
         const result = await database.query(
-            'SELECT id, username, email FROM users WHERE id = @userId',
-            { userId: decoded.userId }
+            'SELECT id, username, email FROM users WHERE id = ?',
+            [decoded.userId]
         );
 
-        if (result.recordset.length === 0) {
+        if (result.length === 0) {
             return res.status(401).json({
                 success: false,
                 message: '用户不存在'
             });
         }
 
-        req.user = {
-            id: decoded.userId,
-            username: decoded.username,
-            email: result.recordset[0].email
-        };
+        req.user = result[0];
         
         next();
     } catch (error) {

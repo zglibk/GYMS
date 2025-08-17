@@ -10,9 +10,9 @@ import { useAuthStore } from './stores/auth'
 
 const authStore = useAuthStore()
 
-onMounted(() => {
-  // 应用启动时检查登录状态
-  authStore.checkAuth()
+onMounted(async () => {
+  // 应用启动时初始化认证状态
+  await authStore.initAuth()
 })
 </script>
 

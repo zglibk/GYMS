@@ -21,11 +21,26 @@
               format="YYYY-MM-DD"
               value-format="YYYY-MM-DD"
               @change="handleDateChange"
+              :shortcuts="dateShortcuts"
+              style="width: 300px;"
             />
+          </div>
+          <div class="quick-filters">
+            <el-button-group>
+              <el-button 
+                v-for="shortcut in quickDateFilters" 
+                :key="shortcut.key"
+                :type="activeQuickFilter === shortcut.key ? 'primary' : 'default'"
+                size="small"
+                @click="setQuickDateRange(shortcut)"
+              >
+                {{ shortcut.text }}
+              </el-button>
+            </el-button-group>
           </div>
           <div class="filter-actions">
             <el-button @click="resetDateRange">重置</el-button>
-            <el-button type="primary" @click="refreshData">
+            <el-button type="primary" @click="refreshData" :loading="loading">
               <el-icon><Refresh /></el-icon>
               刷新数据
             </el-button>
@@ -86,28 +101,48 @@
     <!-- 图表区域 -->
     <div class="charts-section">
       <el-row :gutter="20">
-        <!-- 清洁类型分布 -->
+        <!-- 房间类型分布 -->
         <el-col :xs="24" :lg="12">
           <el-card class="chart-card">
             <template #header>
               <div class="card-header">
-                <h3>清洁类型分布</h3>
-                <el-tag type="info">按记录数统计</el-tag>
+                <h3>房间类型分布</h3>
+                <div class="chart-controls">
+                  <el-button-group>
+                    <el-button 
+                      :type="chartViewType === 'list' ? 'primary' : 'default'"
+                      size="small"
+                      @click="chartViewType = 'list'"
+                    >
+                      <el-icon><List /></el-icon>
+                      清单
+                    </el-button>
+                    <el-button 
+                      :type="chartViewType === 'chart' ? 'primary' : 'default'"
+                      size="small"
+                      @click="chartViewType = 'chart'"
+                    >
+                      <el-icon><PieChart /></el-icon>
+                      图表
+                    </el-button>
+                  </el-button-group>
+                </div>
               </div>
             </template>
             <div class="chart-container">
-              <div v-if="stats.typeStats.length === 0" class="empty-chart">
+              <div v-if="stats.roomTypeStats.length === 0" class="empty-chart">
                 <el-empty description="暂无数据" />
               </div>
-              <div v-else class="type-stats">
+              <!-- 清单视图 -->
+              <div v-else-if="chartViewType === 'list'" class="type-stats">
                 <div 
-                  v-for="item in stats.typeStats" 
+                  v-for="item in stats.roomTypeStats" 
                   :key="item.type"
                   class="type-item"
                 >
                   <div class="type-info">
                     <el-tag 
-                      :type="getCleaningTypeColor(item.type)"
+                      :type="getRoomTypeColor(item.type)"
                       class="type-tag"
                     >
                       {{ item.type }}
@@ -118,6 +153,10 @@
                     ¥{{ formatCurrency(item.amount) }}
                   </div>
                 </div>
+              </div>
+              <!-- 南丁格尔玫瑰图 -->
+              <div v-else class="chart-view">
+                <div ref="chartContainer" class="echarts-container"></div>
               </div>
             </div>
           </el-card>
@@ -221,7 +260,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCleaningStore } from '../stores/cleaning'
 import { 
@@ -233,6 +272,8 @@ import {
   exportToCSV
 } from '../utils'
 import dayjs from 'dayjs'
+import * as echarts from 'echarts'
+import { List, PieChart } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const cleaningStore = useCleaningStore()
@@ -241,23 +282,99 @@ const cleaningStore = useCleaningStore()
 const dateRange = ref([])
 const recentRecords = ref([])
 const exporting = ref(false)
+const activeQuickFilter = ref('30days')
+const chartViewType = ref('list') // 图表视图类型：'list' | 'chart'
+const chartContainer = ref(null) // 图表容器引用
+let chartInstance = null // ECharts实例
 
 // 统计数据
 const stats = computed(() => cleaningStore.stats)
+const loading = computed(() => cleaningStore.loading)
+
+// 快捷日期选择配置
+const quickDateFilters = ref([
+  { key: '7days', text: '最近7天', days: 7 },
+  { key: '30days', text: '最近30天', days: 30 },
+  { key: '90days', text: '最近90天', days: 90 },
+  { key: 'thisMonth', text: '本月', type: 'month' },
+  { key: 'lastMonth', text: '上月', type: 'lastMonth' }
+])
+
+// 日期选择器快捷选项
+const dateShortcuts = [
+  {
+    text: '最近一周',
+    value: () => {
+      const end = new Date()
+      const start = new Date()
+      start.setTime(start.getTime() - 3600 * 1000 * 24 * 7)
+      return [start, end]
+    }
+  },
+  {
+    text: '最近一个月',
+    value: () => {
+      const end = new Date()
+      const start = new Date()
+      start.setTime(start.getTime() - 3600 * 1000 * 24 * 30)
+      return [start, end]
+    }
+  },
+  {
+    text: '最近三个月',
+    value: () => {
+      const end = new Date()
+      const start = new Date()
+      start.setTime(start.getTime() - 3600 * 1000 * 24 * 90)
+      return [start, end]
+    }
+  }
+]
 
 // 格式化数字
 const formatNumber = (num) => {
   return Number(num || 0).toLocaleString()
 }
 
+// 设置快捷日期范围
+const setQuickDateRange = (shortcut) => {
+  activeQuickFilter.value = shortcut.key
+  
+  const today = dayjs()
+  let startDate, endDate
+  
+  switch (shortcut.type) {
+    case 'month':
+      startDate = today.startOf('month')
+      endDate = today.endOf('month')
+      break
+    case 'lastMonth':
+      startDate = today.subtract(1, 'month').startOf('month')
+      endDate = today.subtract(1, 'month').endOf('month')
+      break
+    default:
+      endDate = today
+      startDate = today.subtract(shortcut.days, 'day')
+  }
+  
+  dateRange.value = [startDate.format('YYYY-MM-DD'), endDate.format('YYYY-MM-DD')]
+  refreshData()
+}
+
 // 处理日期范围变化
 const handleDateChange = (dates) => {
+  // 清除快捷选择状态
+  activeQuickFilter.value = ''
   refreshData()
 }
 
 // 重置日期范围
 const resetDateRange = () => {
-  dateRange.value = []
+  // 重置为默认的最近30天
+  const endDate = dayjs()
+  const startDate = endDate.subtract(30, 'day')
+  dateRange.value = [startDate.format('YYYY-MM-DD'), endDate.format('YYYY-MM-DD')]
+  activeQuickFilter.value = ''
   refreshData()
 }
 
@@ -279,7 +396,13 @@ const refreshData = async () => {
 // 获取最近记录
 const fetchRecentRecords = async () => {
   try {
-    await cleaningStore.fetchRecords({ page: 1, pageSize: 5 })
+    const params = { page: 1, pageSize: 5 }
+    if (dateRange.value && dateRange.value.length === 2) {
+      params.startDate = dateRange.value[0]
+      params.endDate = dateRange.value[1]
+    }
+    
+    await cleaningStore.fetchRecords(params)
     recentRecords.value = cleaningStore.records.slice(0, 5)
   } catch (error) {
     console.error('获取最近记录失败:', error)
@@ -327,6 +450,128 @@ const exportData = async () => {
     exporting.value = false
   }
 }
+
+/**
+ * 初始化ECharts图表
+ */
+const initChart = () => {
+  if (!chartContainer.value) return
+  
+  chartInstance = echarts.init(chartContainer.value)
+  updateChart()
+}
+
+/**
+ * 更新图表数据
+ */
+const updateChart = () => {
+  if (!chartInstance || !stats.value.roomTypeStats.length) return
+  
+  const data = stats.value.roomTypeStats.map(item => ({
+    name: item.type,
+    value: item.count,
+    amount: item.amount
+  }))
+  
+  const option = {
+    title: {
+      text: '房间类型分布',
+      left: 'center',
+      textStyle: {
+        fontSize: 16,
+        fontWeight: 'bold'
+      }
+    },
+    tooltip: {
+      trigger: 'item',
+      formatter: function(params) {
+        const item = stats.value.roomTypeStats.find(s => s.type === params.name)
+        return `${params.name}<br/>记录数: ${params.value}<br/>金额: ¥${formatCurrency(item?.amount || 0)}`
+      }
+    },
+    legend: {
+      orient: 'vertical',
+      left: 'left',
+      top: 'middle'
+    },
+    series: [
+      {
+        name: '房间类型',
+        type: 'pie',
+        radius: ['20%', '70%'],
+        center: ['60%', '50%'],
+        roseType: 'radius',
+        itemStyle: {
+          borderRadius: 8
+        },
+        data: data,
+        emphasis: {
+          itemStyle: {
+            shadowBlur: 10,
+            shadowOffsetX: 0,
+            shadowColor: 'rgba(0, 0, 0, 0.5)'
+          }
+        }
+      }
+    ]
+  }
+  
+  chartInstance.setOption(option)
+}
+
+/**
+ * 销毁图表实例
+ */
+const destroyChart = () => {
+  if (chartInstance) {
+    chartInstance.dispose()
+    chartInstance = null
+  }
+}
+
+// 监听图表视图类型变化
+watch(chartViewType, async (newType) => {
+  if (newType === 'chart') {
+    await nextTick()
+    // 确保有数据时才初始化图表
+    if (stats.value.roomTypeStats && stats.value.roomTypeStats.length > 0) {
+      initChart()
+    }
+  } else {
+    destroyChart()
+  }
+})
+
+/**
+ * 获取房间类型对应的颜色
+ * @param {string} type - 房间类型
+ * @returns {string} 颜色类型
+ */
+const getRoomTypeColor = (type) => {
+  const colorMap = {
+    '标准间': 'primary',
+    '豪华间': 'success',
+    '套房': 'warning',
+    '总统套房': 'danger',
+    '商务间': 'info'
+  }
+  return colorMap[type] || 'info'
+}
+
+// 监听统计数据变化，更新图表
+watch(() => stats.value.roomTypeStats, () => {
+  if (chartViewType.value === 'chart') {
+    if (stats.value.roomTypeStats && stats.value.roomTypeStats.length > 0) {
+      if (!chartInstance) {
+        nextTick(() => {
+          initChart()
+        })
+      } else {
+        updateChart()
+      }
+    }
+  }
+}, { deep: true })
 
 // 初始化
 onMounted(() => {
@@ -390,9 +635,54 @@ onMounted(() => {
   white-space: nowrap;
 }
 
+.quick-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.quick-filters .el-button-group {
+  display: flex;
+  gap: 4px;
+}
+
+.quick-filters .el-button {
+  border-radius: 4px;
+  transition: all 0.3s ease;
+}
+
+.quick-filters .el-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
 .filter-actions {
   display: flex;
   gap: 12px;
+}
+
+@media (max-width: 768px) {
+  .filter-content {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .filter-item {
+    justify-content: center;
+  }
+  
+  .quick-filters {
+    justify-content: center;
+  }
+  
+  .quick-filters .el-button-group {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  
+  .filter-actions {
+    justify-content: center;
+  }
 }
 
 .stats-section {
@@ -478,9 +768,35 @@ onMounted(() => {
 
 .card-header h3 {
   margin: 0;
+  color: #303133;
   font-size: 16px;
   font-weight: 600;
-  color: #303133;
+}
+
+.chart-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chart-controls .el-button-group {
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.chart-controls .el-button {
+  border-radius: 0;
+  transition: all 0.3s ease;
+}
+
+.chart-controls .el-button:first-child {
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+}
+
+.chart-controls .el-button:last-child {
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
 }
 
 .chart-container {
@@ -493,6 +809,20 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.chart-view {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.echarts-container {
+  width: 100%;
+  height: 100%;
+  min-height: 300px;
 }
 
 .type-stats {

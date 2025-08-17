@@ -37,6 +37,12 @@
         </el-form-item>
         
         <el-form-item>
+          <el-checkbox v-model="rememberPassword" class="remember-checkbox">
+            记住密码
+          </el-checkbox>
+        </el-form-item>
+        
+        <el-form-item>
           <el-button
             type="primary"
             size="large"
@@ -59,19 +65,7 @@
         </p>
       </div>
       
-      <div class="demo-info">
-        <el-alert
-          title="演示账户"
-          type="info"
-          :closable="false"
-          show-icon
-        >
-          <template #default>
-            <p>用户名: admin</p>
-            <p>密码: admin123</p>
-          </template>
-        </el-alert>
-      </div>
+
     </div>
     
     <!-- 注册对话框 -->
@@ -141,7 +135,7 @@
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { User, Lock } from '@element-plus/icons-vue'
@@ -156,12 +150,39 @@ const registerFormRef = ref()
 
 // 状态
 const showRegister = ref(false)
+const rememberPassword = ref(false)
 
 // 登录表单
 const loginForm = reactive({
   username: '',
   password: ''
 })
+
+// 从本地存储加载保存的登录信息
+const loadSavedCredentials = () => {
+  const savedUsername = localStorage.getItem('savedUsername')
+  const savedPassword = localStorage.getItem('savedPassword')
+  const isRemembered = localStorage.getItem('rememberPassword') === 'true'
+  
+  if (isRemembered && savedUsername && savedPassword) {
+    loginForm.username = savedUsername
+    loginForm.password = savedPassword
+    rememberPassword.value = true
+  }
+}
+
+// 保存或清除登录信息
+const handleCredentialsSave = () => {
+  if (rememberPassword.value) {
+    localStorage.setItem('savedUsername', loginForm.username)
+    localStorage.setItem('savedPassword', loginForm.password)
+    localStorage.setItem('rememberPassword', 'true')
+  } else {
+    localStorage.removeItem('savedUsername')
+    localStorage.removeItem('savedPassword')
+    localStorage.removeItem('rememberPassword')
+  }
+}
 
 // 注册表单
 const registerForm = reactive({
@@ -229,12 +250,19 @@ const handleLogin = async () => {
     
     const success = await authStore.login(loginForm)
     if (success) {
+      // 处理记住密码
+      handleCredentialsSave()
       router.push('/')
     }
   } catch (error) {
     console.error('登录失败:', error)
   }
 }
+
+// 组件挂载时加载保存的登录信息
+onMounted(() => {
+  loadSavedCredentials()
+})
 
 // 处理注册
 const handleRegister = async () => {
@@ -317,17 +345,14 @@ const handleRegister = async () => {
   margin: 0;
 }
 
-.demo-info {
-  margin-top: 20px;
+.remember-checkbox {
+  width: 100%;
+  margin-bottom: 8px;
 }
 
-.demo-info .el-alert {
-  border-radius: 8px;
-}
-
-.demo-info p {
-  margin: 4px 0;
-  font-size: 13px;
+.remember-checkbox .el-checkbox__label {
+  font-size: 14px;
+  color: #606266;
 }
 
 .dialog-footer {
@@ -346,6 +371,14 @@ const handleRegister = async () => {
   
   .login-title {
     font-size: 20px;
+  }
+  
+  .remember-checkbox {
+    margin-bottom: 12px;
+  }
+  
+  .remember-checkbox .el-checkbox__label {
+    font-size: 13px;
   }
 }
 </style>

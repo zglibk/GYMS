@@ -26,7 +26,7 @@ export const useCleaningStore = defineStore('cleaning', () => {
       total_amount: 0,
       avg_unit_price: 0
     },
-    typeStats: []
+    roomTypeStats: []
   })
 
   // 计算属性

@@ -19,18 +19,18 @@ router.post('/login', async (req, res) => {
 
         // 查询用户
         const result = await database.query(
-            'SELECT id, username, password, email FROM users WHERE username = @username',
-            { username }
+            'SELECT id, username, password, email FROM users WHERE username = ?',
+            [username]
         );
 
-        if (result.recordset.length === 0) {
+        if (result.length === 0) {
             return res.status(401).json({
                 success: false,
                 message: '用户名或密码错误'
             });
         }
 
-        const user = result.recordset[0];
+        const user = result[0];
         
         // 验证密码
         const isValidPassword = await bcrypt.compare(password, user.password);
@@ -79,11 +79,11 @@ router.post('/register', async (req, res) => {
 
         // 检查用户名是否已存在
         const existingUser = await database.query(
-            'SELECT id FROM users WHERE username = @username',
-            { username }
+            'SELECT id FROM users WHERE username = ?',
+            [username]
         );
 
-        if (existingUser.recordset.length > 0) {
+        if (existingUser.length > 0) {
             return res.status(400).json({
                 success: false,
                 message: '用户名已存在'
@@ -95,17 +95,15 @@ router.post('/register', async (req, res) => {
 
         // 创建用户
         const result = await database.query(
-            `INSERT INTO users (username, password, email) 
-             OUTPUT INSERTED.id, INSERTED.username, INSERTED.email
-             VALUES (@username, @password, @email)`,
-            { 
-                username, 
-                password: hashedPassword, 
-                email: email || null 
-            }
+            `INSERT INTO users (username, password, email) VALUES (?, ?, ?)`,
+            [username, hashedPassword, email || null]
         );
 
-        const newUser = result.recordset[0];
+        // 获取新创建的用户信息
+        const newUserResult = await database.query(
+            'SELECT id, username, email FROM users WHERE id = LAST_INSERT_ID()'
+        );
+        const newUser = newUserResult[0];
         const token = generateToken(newUser.id, newUser.username);
 
         res.status(201).json({
@@ -135,7 +133,9 @@ router.get('/me', authenticateToken, async (req, res) => {
         res.json({
             success: true,
             data: {
-                user: req.user
+                id: req.user.id,
+                username: req.user.username,
+                email: req.user.email
             }
         });
     } catch (error) {
